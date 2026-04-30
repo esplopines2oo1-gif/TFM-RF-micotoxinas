@@ -1,0 +1,618 @@
+"""
+RANDOM FOREST PARA PREDECIR CONTAMINACION POR MICOTOXINAS EN PERU
+CON TEMPERATURAS REALES POR CIUDAD (desde Excel)
+ESCENARIO: +1°C PARA 2031
+GRAFICOS: STACKED BAR, PRECISION-RECALL, CALIBRACION, ARBOL, 
+          ERROR RATE PLOT, ROC CURVE MEJORADA
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import learning_curve, cross_val_score, StratifiedKFold, train_test_split, cross_val_predict, validation_curve
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import (roc_auc_score, confusion_matrix, roc_curve, 
+                             accuracy_score, r2_score, mean_squared_error,
+                             precision_recall_curve, average_precision_score)
+from sklearn.calibration import calibration_curve
+from sklearn.tree import plot_tree
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configurar graficos
+try:
+    plt.style.use('ggplot')
+except:
+    pass
+sns.set_palette("Set2")
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['font.size'] = 10
+
+
+# 1. Temperaturas y humedades optimas por micotoxina
+TEMP_OPTIMA = {
+    'AFB1': {'min': 25, 'max': 35, 'optima': 33, 'hongo': 'Aspergillus flavus'},
+    'FUM': {'min': 25, 'max': 30, 'optima': 30, 'hongo': 'Fusarium verticillioides'},
+    'DON': {'min': 20, 'max': 25, 'optima': 23, 'hongo': 'Fusarium graminearum'},
+    'ZEN': {'min': 20, 'max': 25, 'optima': 25, 'hongo': 'Fusarium graminearum'},
+    'T2_HT2': {'min': 20, 'max': 25, 'optima': 20, 'hongo': 'Fusarium langsethiae'},
+    'OTA': {'min': 25, 'max': 30, 'optima': 25, 'hongo': 'Aspergillus ochraceus'}
+}
+
+# Humedades optimas para cada micotoxina (en %)
+HUMEDAD_OPTIMA = {
+    'AFB1': {'min': 88, 'max': 90, 'optima': 89, 'nota': 'Alta humedad favorece Aspergillus'},
+    'FUM': {'min': 89, 'max': 93, 'optima': 90, 'nota': 'Humedad moderada-alta'},
+    'DON': {'min': 93, 'max': 95, 'optima': 94, 'nota': 'Humedad muy alta'},
+    'ZEN': {'min': 98, 'max': 99, 'optima': 99, 'nota': 'Humedad alta'},
+    'T2_HT2': {'min': 98, 'max': 99, 'optima': 98, 'nota': 'Humedad muy alta'},
+    'OTA': {'min': 97, 'max': 100, 'optima': 98, 'nota': 'Humedad extremadamente alta'}
+}
+
+# Nombres cortos para micotoxinas
+nombres_cortos = {
+    'AFB1 (ppb)': 'AFB1',
+    'FUM  (ppb)': 'FUM',
+    'DON  (ppb)': 'DON',
+    'ZEN  (ppb)': 'ZEN',
+    'T-2/HT-2  (ppb)': 'T2_HT2',
+    'OTA  (ppb)': 'OTA'
+}
+
+def calcular_factor_riesgo_temp(temp_actual, toxina):
+    """Calcula el factor de riesgo por temperatura"""
+    if toxina not in TEMP_OPTIMA:
+        return 0
+    info = TEMP_OPTIMA[toxina]
+    t_min, t_max, t_opt = info['min'], info['max'], info['optima']
+    if t_min <= temp_actual <= t_max:
+        distancia_optimo = abs(temp_actual - t_opt)
+        rango = (t_max - t_min) / 2
+        return max(0.3, 1 - (distancia_optimo / rango))
+    else:
+        return 0.1
+
+def calcular_factor_riesgo_humedad(humedad_actual, toxina):
+    """Calcula el factor de riesgo por humedad"""
+    if toxina not in HUMEDAD_OPTIMA:
+        return 0
+    info = HUMEDAD_OPTIMA[toxina]
+    h_min, h_max, h_opt = info['min'], info['max'], info['optima']
+    
+    if humedad_actual < h_min:
+        return max(0.1, 0.3 * (humedad_actual / h_min))
+    elif h_min <= humedad_actual <= h_max:
+        distancia_optimo = abs(humedad_actual - h_opt)
+        rango = (h_max - h_min) / 2
+        return max(0.5, 1 - (distancia_optimo / rango))
+    else:
+        return max(0.2, 0.5 * (h_max / humedad_actual))
+
+def calcular_riesgo_total(temp_actual, humedad_actual):
+    """Riesgo combinado temperatura + humedad"""
+    riesgos = []
+    for toxina in TEMP_OPTIMA.keys():
+        riesgo_temp = calcular_factor_riesgo_temp(temp_actual, toxina)
+        riesgo_humedad = calcular_factor_riesgo_humedad(humedad_actual, toxina)
+        riesgo_combinado = np.sqrt(riesgo_temp * riesgo_humedad)
+        riesgos.append(riesgo_combinado)
+    return np.mean(riesgos)
+
+def esta_contaminado(valor):
+    """Determina si una muestra esta contaminada"""
+    if pd.isna(valor) or valor == "":
+        return 0
+    valor_str = str(valor).strip()
+    if valor_str.startswith('<'):
+        return 0
+    if valor_str.startswith('>'):
+        return 1
+    try:
+        float(valor_str.replace(',', '.'))
+        return 1
+    except:
+        return 0
+
+def asignar_ciudad(matriz):
+    """Asigna ciudad basada en la matriz alimenticia"""
+    matriz = str(matriz).upper().strip()
+    if 'TORTA DE PALMISTE' in matriz:
+        return 'Pucallpa'
+    elif 'TRIGO' in matriz or 'POLVILLO' in matriz:
+        return 'Cusco'
+    elif 'MAIZ' in matriz:
+        return 'Trujillo'
+    elif 'ARROCILLO' in matriz:
+        return 'Iquitos'
+    elif 'SOJA' in matriz:
+        return 'Lima'
+    else:
+        return 'Lima'
+
+
+# 2. Cargar datos
+print("CARGANDO DATOS")
+print("")
+
+df_micotoxinas = pd.read_excel('datos Peru micotoxinas.xlsx')
+df_clima = pd.read_excel('detalle por ubicacion.xlsx')
+
+print(f"Micotoxinas: {df_micotoxinas.shape[0]} filas")
+print(f"Clima: {df_clima.shape[0]} filas")
+print(f"Ciudades en clima: {df_clima['location'].unique()}")
+
+
+# 3. Procesar micotoxinas
+print("")
+print("PROCESANDO MICOTOXINAS")
+print("")
+
+df_micotoxinas.columns = df_micotoxinas.columns.str.strip()
+df_micotoxinas['Mes'] = df_micotoxinas['Mes'].str.strip()
+
+# Crear variable contaminada
+micotoxinas = ['AFB1 (ppb)', 'FUM  (ppb)', 'DON  (ppb)', 
+               'ZEN  (ppb)', 'T-2/HT-2  (ppb)', 'OTA  (ppb)']
+
+for m in micotoxinas:
+    df_micotoxinas[f'contam_{m}'] = df_micotoxinas[m].apply(esta_contaminado)
+
+df_micotoxinas['contaminada'] = df_micotoxinas[[f'contam_{m}' for m in micotoxinas]].max(axis=1)
+df_micotoxinas['ciudad'] = df_micotoxinas['Matriz'].apply(asignar_ciudad)
+
+print(f"Muestras contaminadas: {df_micotoxinas['contaminada'].sum()} de {len(df_micotoxinas)} ({df_micotoxinas['contaminada'].mean():.1%})")
+print(f"Ciudades en micotoxinas: {df_micotoxinas['ciudad'].unique()}")
+
+
+# 4. Procesar datos climaticos (TEMPERATURAS REALES DESDE EXCEL)
+print("")
+print("PROCESANDO DATOS CLIMATICOS (DESDE EXCEL)")
+print("")
+
+df_clima.columns = df_clima.columns.str.strip()
+columnas_num = ['temperature_2m_mean', 'temperature_2m_max', 
+                'relative_humidity_2m_mean', 'precipitation_sum']
+
+for col in columnas_num:
+    if col in df_clima.columns:
+        df_clima[col] = df_clima[col].astype(str).str.replace(',', '.').astype(float)
+
+df_clima['date'] = pd.to_datetime(df_clima['date'])
+df_clima['Año'] = df_clima['date'].dt.year
+df_clima['Mes_num'] = df_clima['date'].dt.month
+
+meses_num_nombre = {1:'Enero', 2:'Febrero', 3:'Marzo', 4:'Abril', 5:'Mayo', 6:'Junio',
+                    7:'Julio', 8:'Agosto', 9:'Septiembre', 10:'Octubre', 11:'Noviembre', 12:'Diciembre'}
+df_clima['Mes'] = df_clima['Mes_num'].map(meses_num_nombre)
+
+# Agrupar por año, mes y ciudad
+df_clima_agrupado = df_clima.groupby(['Año', 'Mes', 'location']).agg({
+    'temperature_2m_mean': 'mean',
+    'temperature_2m_max': 'mean',
+    'relative_humidity_2m_mean': 'mean',
+    'precipitation_sum': 'mean'
+}).reset_index()
+df_clima_agrupado = df_clima_agrupado.rename(columns={'location': 'ciudad'})
+
+# Calcular estadisticas por ciudad (históricas)
+stats_ciudad = df_clima_agrupado.groupby('ciudad').agg({
+    'temperature_2m_mean': ['mean', 'std', 'min', 'max'],
+    'relative_humidity_2m_mean': ['mean', 'std']
+}).round(2)
+stats_ciudad.columns = ['temp_media_historica', 'temp_std_historica', 'temp_min_historica', 'temp_max_historica',
+                        'humedad_media_historica', 'humedad_std_historica']
+stats_ciudad = stats_ciudad.reset_index()
+
+print("Estadisticas climaticas por ciudad (desde Excel):")
+print(stats_ciudad.to_string())
+
+
+# 5. Unir datos
+print("")
+print("UNIENDO DATOS")
+print("")
+
+df_completo = df_micotoxinas.merge(df_clima_agrupado, on=['Año', 'Mes', 'ciudad'], how='left')
+
+# Rellenar valores faltantes
+for ciudad in df_completo['ciudad'].unique():
+    for col in columnas_num:
+        promedio = df_completo[df_completo['ciudad'] == ciudad][col].mean()
+        df_completo.loc[(df_completo['ciudad'] == ciudad) & (df_completo[col].isna()), col] = promedio
+
+# Calcular riesgo total
+df_completo['riesgo_total'] = df_completo.apply(
+    lambda row: calcular_riesgo_total(row['temperature_2m_mean'], row['relative_humidity_2m_mean']), 
+    axis=1
+)
+
+# Calcular anomalia termica (desviacion de la media historica de la ciudad)
+df_completo = df_completo.merge(stats_ciudad, on='ciudad', how='left')
+df_completo['anomalia_temp'] = df_completo['temperature_2m_mean'] - df_completo['temp_media_historica']
+df_completo['anomalia_humedad'] = df_completo['relative_humidity_2m_mean'] - df_completo['humedad_media_historica']
+
+df_completo = df_completo.dropna(subset=['temperature_2m_mean', 'relative_humidity_2m_mean', 'contaminada'])
+
+print(f"Dataset final: {df_completo.shape[0]} muestras")
+print(f"Años disponibles: {sorted(df_completo['Año'].unique())}")
+print(f"Meses disponibles: {sorted(df_completo['Mes'].unique())}")
+
+
+# 6. Preparar datos para el modelo
+print("")
+print("PREPARANDO MODELO CON VARIABLES POR CIUDAD")
+print("")
+
+# Codificar ciudad
+le_ciudad = LabelEncoder()
+df_completo['ciudad_enc'] = le_ciudad.fit_transform(df_completo['ciudad'])
+
+# Codificar matriz
+le_matriz = LabelEncoder()
+df_completo['Matriz_enc'] = le_matriz.fit_transform(df_completo['Matriz'])
+
+# VARIABLES PREDICTORAS
+predictores = [
+    'Matriz_enc',
+    'ciudad_enc',
+    'temperature_2m_mean',
+    'relative_humidity_2m_mean',
+    'riesgo_total',
+    'anomalia_temp',
+    'anomalia_humedad'
+]
+
+X = df_completo[predictores].copy()
+y = df_completo['contaminada'].copy()
+
+print(f"Predictores: {predictores}")
+print(f"Total muestras: {len(X)}")
+
+
+# 7. Dividir y entrenar
+print("")
+print("ENTRENANDO RANDOM FOREST")
+print("")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42, stratify=y
+)
+
+print(f"Entrenamiento: {X_train.shape[0]} muestras ({X_train.shape[0]/len(X)*100:.0f}%)")
+print(f"  - Contaminadas: {y_train.mean():.1%}")
+print(f"Prueba: {X_test.shape[0]} muestras ({X_test.shape[0]/len(X)*100:.0f}%)")
+print(f"  - Contaminadas: {y_test.mean():.1%}")
+
+# Entrenar Random Forest
+rf = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=8,
+    min_samples_split=10,
+    random_state=42
+)
+
+rf.fit(X_train, y_train)
+
+# Validacion cruzada
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(rf, X_train, y_train, cv=cv, scoring='roc_auc')
+print(f"Validacion cruzada AUC-ROC: {cv_scores.mean():.3f} (+/- {cv_scores.std():.3f})")
+
+# Predicciones
+y_test_pred = rf.predict(X_test)
+y_test_proba = rf.predict_proba(X_test)[:, 1]
+auc_test = roc_auc_score(y_test, y_test_proba)
+
+print("")
+print(f"Rendimiento en prueba:")
+print(f"  Accuracy: {accuracy_score(y_test, y_test_pred):.3f}")
+print(f"  AUC-ROC: {auc_test:.3f}")
+
+print("")
+print("Importancia de variables:")
+importancias_df = pd.DataFrame({
+    'variable': predictores,
+    'importancia': rf.feature_importances_
+}).sort_values('importancia', ascending=False)
+
+for _, row in importancias_df.iterrows():
+    print(f"  {row['variable']}: {row['importancia']:.3f}")
+
+
+# 8. GRAFICO 1: Error Rate Plot (Error vs Número de Árboles)
+print("")
+print("GENERANDO GRAFICO 1: ERROR RATE PLOT")
+print("")
+
+# Probar diferentes números de árboles
+n_estimators_range = [1, 5, 10, 25, 50, 75, 100, 150, 200, 300, 400, 500]
+train_errors = []
+test_errors = []
+
+for n in n_estimators_range:
+    print(f"  Probando con {n} arboles...")
+    rf_temp = RandomForestClassifier(n_estimators=n, max_depth=8, min_samples_split=10, random_state=42)
+    rf_temp.fit(X_train, y_train)
+    
+    # Error de entrenamiento
+    train_pred = rf_temp.predict(X_train)
+    train_error = 1 - accuracy_score(y_train, train_pred)
+    train_errors.append(train_error)
+    
+    # Error de prueba
+    test_pred = rf_temp.predict(X_test)
+    test_error = 1 - accuracy_score(y_test, test_pred)
+    test_errors.append(test_error)
+
+# Grafico de Error Rate
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(n_estimators_range, train_errors, 'o-', color='blue', linewidth=2, markersize=6, label='Error de entrenamiento')
+ax.plot(n_estimators_range, test_errors, 's-', color='red', linewidth=2, markersize=6, label='Error de validacion (prueba)')
+ax.axhline(y=min(test_errors), color='green', linestyle='--', alpha=0.7, label=f'Mínimo error: {min(test_errors):.3f}')
+ax.set_xlabel('Número de Árboles (n_estimators)', fontsize=12)
+ax.set_ylabel('Tasa de Error', fontsize=12)
+ax.set_title('Curva de Error vs Número de Árboles (Random Forest)', fontsize=14, fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+# Marcar el punto óptimo
+optimo_idx = np.argmin(test_errors)
+ax.scatter(n_estimators_range[optimo_idx], test_errors[optimo_idx], color='green', s=150, 
+           zorder=5, marker='*', label=f'Óptimo: {n_estimators_range[optimo_idx]} árboles')
+ax.legend()
+plt.tight_layout()
+plt.savefig('1_error_rate_plot.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 1 guardado: '1_error_rate_plot.png'")
+print(f"  Número óptimo de árboles: {n_estimators_range[optimo_idx]}")
+
+
+# 9. GRAFICO 2: Curva ROC (con punto óptimo)
+print("")
+print("GENERANDO GRAFICO 2: CURVA ROC MEJORADA")
+print("")
+
+fig, ax = plt.subplots(figsize=(10, 8))
+fpr, tpr, thresholds = roc_curve(y_test, y_test_proba)
+auc_test = roc_auc_score(y_test, y_test_proba)
+
+# Calcular el punto óptimo (Youden's J statistic = sensitivity + specificity - 1)
+optimal_idx = np.argmax(tpr - fpr)
+optimal_threshold = thresholds[optimal_idx]
+optimal_fpr = fpr[optimal_idx]
+optimal_tpr = tpr[optimal_idx]
+
+# Curva ROC
+ax.plot(fpr, tpr, 'b-', linewidth=3, label=f'ROC Curve (AUC = {auc_test:.3f})')
+ax.plot([0, 1], [0, 1], 'r--', linewidth=2, alpha=0.5, label='Clasificador aleatorio (AUC = 0.5)')
+
+# Marcar el punto óptimo
+ax.scatter(optimal_fpr, optimal_tpr, color='green', s=200, zorder=5, 
+           marker='*', edgecolors='black', linewidths=1)
+ax.annotate(f'Punto óptimo\nThreshold = {optimal_threshold:.3f}\nTPR = {optimal_tpr:.3f}\nFPR = {optimal_fpr:.3f}', 
+            xy=(optimal_fpr, optimal_tpr), xytext=(optimal_fpr + 0.15, optimal_tpr - 0.1),
+            fontsize=9, ha='left', va='top',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+
+# Rellenar el área bajo la curva
+ax.fill_between(fpr, tpr, alpha=0.2, color='blue')
+
+ax.set_xlabel('Tasa de Falsos Positivos (1 - Especificidad)', fontsize=13)
+ax.set_ylabel('Tasa de Verdaderos Positivos (Sensibilidad)', fontsize=13)
+ax.set_title('Curva ROC - Random Forest', fontsize=15, fontweight='bold')
+ax.legend(loc='lower right', fontsize=11)
+ax.grid(True, alpha=0.3)
+ax.set_xlim([-0.02, 1.02])
+ax.set_ylim([-0.02, 1.02])
+
+# Añadir cuadro con métricas
+metrics_text = f'AUC = {auc_test:.3f}\nAccuracy = {accuracy_score(y_test, y_test_pred):.3f}\nSensibilidad = {optimal_tpr:.3f}\nEspecificidad = {1-optimal_fpr:.3f}'
+ax.text(0.05, 0.05, metrics_text, transform=ax.transAxes, fontsize=10,
+        verticalalignment='bottom', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+plt.tight_layout()
+plt.savefig('2_roc_curve_mejorada.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 2 guardado: '2_roc_curve_mejorada.png'")
+
+
+# 10. GRAFICO 3: Curva de precision-recall
+print("")
+print("GENERANDO GRAFICO 3: PRECISION-RECALL CURVE")
+print("")
+
+fig, ax = plt.subplots(figsize=(8, 6))
+precision, recall, _ = precision_recall_curve(y_test, y_test_proba)
+avg_precision = average_precision_score(y_test, y_test_proba)
+ax.plot(recall, precision, 'b-', linewidth=2, label=f'AP = {avg_precision:.3f}')
+ax.set_xlabel('Recall', fontsize=12)
+ax.set_ylabel('Precision', fontsize=12)
+ax.set_title('Curva Precision-Recall', fontsize=14, fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.savefig('3_precision_recall_curve.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 3 guardado: '3_precision_recall_curve.png'")
+
+
+# 11. GRAFICO 4: Curva de calibracion
+print("")
+print("GENERANDO GRAFICO 4: CALIBRATION CURVE")
+print("")
+
+fig, ax = plt.subplots(figsize=(8, 6))
+prob_true, prob_pred = calibration_curve(y_test, y_test_proba, n_bins=10)
+ax.plot(prob_pred, prob_true, 'o-', linewidth=2, label='Random Forest')
+ax.plot([0, 1], [0, 1], 'r--', label='Perfectamente calibrado')
+ax.set_xlabel('Probabilidad predicha media', fontsize=12)
+ax.set_ylabel('Fraccion de positivos', fontsize=12)
+ax.set_title('Curva de Calibracion', fontsize=14, fontweight='bold')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.savefig('4_calibration_curve.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 4 guardado: '4_calibration_curve.png'")
+
+
+# 12. GRAFICO 5: Árbol de decision
+print("")
+print("GENERANDO GRAFICO 5: ARBOL DE DECISION")
+print("")
+
+fig, ax = plt.subplots(figsize=(20, 12))
+tree_to_plot = rf.estimators_[0]
+plot_tree(tree_to_plot, feature_names=predictores, 
+          class_names=['No contaminada', 'Contaminada'],
+          filled=True, rounded=True, fontsize=8, ax=ax, max_depth=3)
+plt.title('Ejemplo de Árbol de Decision (Random Forest)', fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig('5_arbol_decision_ejemplo.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 5 guardado: '5_arbol_decision_ejemplo.png'")
+
+
+# 13. PROYECCION POR CIUDAD (+1°C para 2031)
+print("")
+print("PROYECCION 2026-2031 (+1°C POR CIUDAD)")
+print("")
+
+años_futuros = list(range(2026, 2032))
+incremento_anual = 1.0 / 6
+
+ultimo_año = max(df_completo['Año'])
+temp_base_ciudad = df_completo[df_completo['Año'] == ultimo_año].groupby('ciudad')['temperature_2m_mean'].mean()
+
+print(f"Temperatura base por ciudad (año {ultimo_año}):")
+for ciudad, temp in temp_base_ciudad.items():
+    print(f"  {ciudad}: {temp:.1f}°C")
+
+# Proyeccion
+resultados_ciudad = []
+
+for año in años_futuros:
+    años_desde_base = año - ultimo_año
+    delta_temp = años_desde_base * incremento_anual
+    delta_temp = max(0, min(1.0, delta_temp))
+    
+    for ciudad in df_completo['ciudad'].unique():
+        df_ciudad = df_completo[df_completo['ciudad'] == ciudad].copy()
+        
+        df_ciudad['temperature_2m_mean'] = df_ciudad['temperature_2m_mean'] + delta_temp
+        df_ciudad['riesgo_total'] = df_ciudad.apply(
+            lambda row: calcular_riesgo_total(row['temperature_2m_mean'], row['relative_humidity_2m_mean']), 
+            axis=1
+        )
+        df_ciudad['anomalia_temp'] = df_ciudad['temperature_2m_mean'] - df_ciudad['temp_media_historica']
+        df_ciudad['Matriz_enc'] = le_matriz.transform(df_ciudad['Matriz'])
+        df_ciudad['ciudad_enc'] = le_ciudad.transform(df_ciudad['ciudad'])
+        
+        X_futuro = df_ciudad[predictores].copy()
+        proba = rf.predict_proba(X_futuro)[:, 1]
+        
+        resultados_ciudad.append({
+            'Año': año,
+            'ciudad': ciudad,
+            'delta_temp': delta_temp,
+            'probabilidad_promedio': proba.mean(),
+            'temp_promedio': df_ciudad['temperature_2m_mean'].mean(),
+            'humedad_promedio': df_ciudad['relative_humidity_2m_mean'].mean(),
+            'contaminacion_estimada': (proba > 0.5).mean()
+        })
+
+df_resultados = pd.DataFrame(resultados_ciudad)
+
+print("")
+print("PROYECCION 2031 POR CIUDAD:")
+resultados_2031 = df_resultados[df_resultados['Año'] == 2031]
+for _, row in resultados_2031.iterrows():
+    print(f"  {row['ciudad']}: {row['contaminacion_estimada']:.1%} (Temp: {row['temp_promedio']:.1f}°C)")
+
+
+# 14. GRAFICO 6: Proyeccion y resumen
+print("")
+print("GENERANDO GRAFICO 6: PROYECCION FINAL")
+print("")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+fig.suptitle('Proyeccion de Contaminacion 2026-2031 (+1°C)', fontsize=14, fontweight='bold')
+
+# Grafico A: Proyeccion por ciudad
+ax1 = axes[0]
+ciudades_unicas = df_resultados['ciudad'].unique()
+colores = plt.cm.Set3(np.linspace(0, 1, len(ciudades_unicas)))
+for i, ciudad in enumerate(ciudades_unicas):
+    df_ciudad_res = df_resultados[df_resultados['ciudad'] == ciudad]
+    ax1.plot(df_ciudad_res['Año'], df_ciudad_res['contaminacion_estimada'] * 100, 
+             'o-', color=colores[i], linewidth=2, label=ciudad)
+ax1.set_xlabel('Año', fontsize=11)
+ax1.set_ylabel('Contaminacion Estimada (%)', fontsize=11)
+ax1.set_title('Proyeccion por Ciudad', fontsize=11, fontweight='bold')
+ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+ax1.grid(True, alpha=0.3)
+
+# Grafico B: Importancia de variables
+ax2 = axes[1]
+ax2.barh(importancias_df['variable'], importancias_df['importancia'], color='steelblue')
+ax2.set_xlabel('Importancia', fontsize=11)
+ax2.set_title('Importancia de Variables', fontsize=11, fontweight='bold')
+for i, (_, row) in enumerate(importancias_df.iterrows()):
+    ax2.text(row['importancia'] + 0.01, i, f"{row['importancia']:.1%}", va='center')
+
+plt.tight_layout()
+plt.savefig('6_proyeccion_final.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("Grafico 6 guardado: '6_proyeccion_final.png'")
+
+
+# 15. RESUMEN FINAL
+print("")
+print("RESUMEN FINAL DEL ANALISIS")
+print("")
+
+contam_actual = y.mean()
+contam_2031_promedio = resultados_2031['contaminacion_estimada'].mean()
+
+print(f"""
+DATOS UTILIZADOS:
+  - Temperaturas: DIRECTAMENTE DEL EXCEL 'detalle por ubicacion.xlsx'
+  - Ciudades en el analisis: {', '.join(ciudades_unicas)}
+  - Años historicos: {sorted(df_completo['Año'].unique())}
+
+CONTAMINACION ACTUAL: {contam_actual:.1%}
+
+PROYECCION 2031 POR CIUDAD:
+""")
+for _, row in resultados_2031.iterrows():
+    cambio = (row['contaminacion_estimada'] - contam_actual) * 100
+    print(f"  {row['ciudad']}: {row['contaminacion_estimada']:.1%} (cambio: {cambio:+.1f} pp)")
+
+print(f"""
+PROMEDIO 2031: {contam_2031_promedio:.1%}
+
+VARIABLES MAS IMPORTANTES PARA EL MODELO:
+""")
+for _, row in importancias_df.head(3).iterrows():
+    print(f"  - {row['variable']}: {row['importancia']:.1%}")
+
+print(f"""
+NUMERO OPTIMO DE ARBOLES:
+  - Según Error Rate Plot: {n_estimators_range[optimo_idx]} árboles
+  - Error mínimo de validación: {min(test_errors):.3f}
+
+METRICAS DEL MODELO (con 200 árboles):
+  - AUC-ROC: {auc_test:.3f}
+  - Accuracy: {accuracy_score(y_test, y_test_pred):.3f}
+  - Punto óptimo de corte (Youden): {optimal_threshold:.3f}
+
+GRAFICOS GENERADOS:
+  1. 1_error_rate_plot.png - Error vs Número de Árboles 
+  2. 2_roc_curve_mejorada.png - Curva ROC con punto óptimo 
+  3. 3_precision_recall_curve.png - Curva Precision-Recall
+  4. 4_calibration_curve.png - Curva de calibracion
+  5. 5_arbol_decision_ejemplo.png - Visualizacion del arbol
+  6. 6_proyeccion_final.png - Proyeccion por ciudad + importancia variables
+""")
+
+print("")
+print("ANALISIS COMPLETADO")
