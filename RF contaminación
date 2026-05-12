@@ -3,14 +3,6 @@ RANDOM FOREST PARA PREDECIR CONTAMINACION POR MICOTOXINAS EN PERU
 CON GRAFICOS COMPLETOS - INCLUYE ANÁLISIS POR CIUDAD Y TIEMPO
 ESCENARIO: +1°C PARA 2031
 ENTRENAMIENTO: 70% de muestras | PRUEBA: 30% de muestras
-
-MEJORAS EN GRÁFICAS:
-  - Sustituido "Actual vs Predicho" (inútil en clasificación) por
-    Precision-Recall curve (más informativa con clases desbalanceadas)
-  - Curva de aprendizaje con bandas de desviación estándar
-  - Proyección muestra también la probabilidad promedio (no solo >0.5)
-    para evitar el efecto techo
-  - Correlaciones: añadida Matriz y Ciudad para ver qué predice realmente
 """
 
 import pandas as pd
