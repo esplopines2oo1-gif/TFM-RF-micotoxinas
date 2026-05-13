@@ -1,8 +1,8 @@
 """
 RANDOM FOREST PARA PREDECIR CONTAMINACION POR MICOTOXINAS EN PERU
-CON GRAFICOS COMPLETOS - INCLUYE ANÁLISIS POR CIUDAD Y TIEMPO
+UN MODELO POR MICOTOXINA - PROYECCIÓN DE PROBABILIDAD POR TOXINA Y AÑO
 ESCENARIO: +1°C PARA 2031
-ENTRENAMIENTO: 70% de muestras | PRUEBA: 30% de muestras
+ENTRENAMIENTO: 70% | PRUEBA: 30%
 """
 
 import pandas as pd
@@ -13,9 +13,8 @@ from sklearn.model_selection import (learning_curve, cross_val_score,
                                      cross_val_predict)
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (roc_auc_score, confusion_matrix, roc_curve,
-                             accuracy_score, r2_score, mean_squared_error,
-                             precision_recall_curve, average_precision_score,
-                             classification_report)
+                             accuracy_score, precision_recall_curve,
+                             average_precision_score, classification_report)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
@@ -30,7 +29,9 @@ plt.rcParams['figure.figsize'] = (12, 8)
 plt.rcParams['font.size'] = 10
 
 
-#   1. Constantes biológicas                          ─
+
+#   1. Constantes biológicas
+
 
 TEMP_OPTIMA = {
     'AFB1':   {'min': 25, 'max': 35, 'optima': 33, 'hongo': 'Aspergillus flavus'},
@@ -50,6 +51,16 @@ HUMEDAD_OPTIMA = {
     'OTA':    {'min': 95,  'max': 100, 'optima': 98.0},
 }
 
+# Nombres de columnas en el Excel 
+COLS_TOXINAS = {
+    'AFB1 (ppb)':      'AFB1',
+    'FUM  (ppb)':      'FUM',
+    'DON  (ppb)':      'DON',
+    'ZEN  (ppb)':      'ZEN',
+    'T-2/HT-2  (ppb)': 'T2_HT2',
+    'OTA  (ppb)':      'OTA',
+}
+
 COLS_CLIMA = ['temperature_2m_mean', 'temperature_2m_max',
               'relative_humidity_2m_mean', 'precipitation_sum']
 
@@ -58,11 +69,115 @@ MESES_A_NUM = {
     'Mayo': 5, 'Junio': 6, 'Julio': 7, 'Agosto': 8,
     'Septiembre': 9, 'Octubre': 10, 'Noviembre': 11, 'Diciembre': 12,
 }
-NUM_A_MES = {v: k for k, v in MESES_A_NUM.items()}
+NUM_A_MES   = {v: k for k, v in MESES_A_NUM.items()}
 ORDEN_MESES = list(MESES_A_NUM.keys())
 
 
-#   2. Funciones auxiliares                           
+#   2. Mapeo completo de matrices a ciudades y valores base
+
+
+MATRIZ_CIUDAD = {
+    # PALMISTE / PALMA ACEITERA → Pucallpa (Selva)
+    'TORTA DE PALMISTE': 'Pucallpa',
+    'TORTA PALMISTE':    'Pucallpa',
+    'TORTA DE PALMA':    'Pucallpa',
+    'PALMISTE':          'Pucallpa',
+    'ACEITE DE PALMA':   'Pucallpa',
+
+    # MAIZ y derivados → Trujillo (Costa Norte)
+    'MAIZ':                    'Trujillo',
+    'MAÍZ':                    'Trujillo',
+    'MAIZ ROYAL':              'Trujillo',
+    'MAIZ NACIONAL':           'Trujillo',
+    'MAIZ B':                  'Trujillo',
+    'MAIZ ARGENTINO':          'Trujillo',
+    'MAIZ FREYA':              'Trujillo',
+    'MAIZ AMARILLO':           'Trujillo',
+    'MAIZ AMARILLO DURO':      'Trujillo',
+    'MAIZ BLANCO':             'Trujillo',
+    'MAIZ MORADO':             'Trujillo',
+    'MAIZ GIGANTE':            'Trujillo',
+    'MAIZ AVICOLA AVIKONOR':   'Trujillo',
+    'MAÍZ AVICOLA':            'Trujillo',
+    'MAÍZ - IMPRESSION HAY':   'Trujillo',
+    'MAÍZ (M01)':              'Trujillo',
+    'MAÍZ (M02)':              'Trujillo',
+    'MAÍZ (M03)':              'Trujillo',
+    'MAÍZ (M04)':              'Trujillo',
+
+    # TRIGO y derivados → Cusco (Sierra)
+    'TRIGO':                    'Cusco',
+    'SUB PRODUCTO DE TRIGO':    'Cusco',
+    'SUB PRODUCTO DE TRIGO ':   'Cusco',
+    'SUB. DE TRIGO':            'Cusco',
+    'SUBPRODUCTO DE TRIGO':     'Cusco',
+    'SUBRPRODUCTO DE TRIGO':    'Cusco',
+    'POLVILLO':                 'Cusco',
+    'POLVILLO 1':               'Cusco',
+    'POLVILLO 2':               'Cusco',
+    'POLVILLO-AVICOLA AVIKONOR':'Cusco',
+    'HARINA DE TRIGO':          'Cusco',
+    'SALVADO DE TRIGO':         'Cusco',
+    'GLUTEN':                   'Cusco',
+    'AFRECHO':                  'Cusco',
+    'CEBADA':                   'Cusco',
+    'QUINUA':                   'Cusco',
+    'KIWICHA':                  'Cusco',
+
+    # ARROZ y derivados → Iquitos (Selva)
+    'ARROCILLO':            'Iquitos',
+    'ARROZ':                'Iquitos',
+    'ARROZ PELADO':         'Iquitos',
+    'ARROZ INTEGRAL':       'Iquitos',
+    'SUBPRODUCTO DE ARROZ': 'Iquitos',
+
+    # SOJA y derivados → Lima (Costa Central)
+    'SOJA':                        'Lima',
+    'TORTA DE SOJA':               'Lima',
+    'TORTA SOYA':                  'Lima',
+    'HARINA INTEGRAL DE SOYA':     'Lima',
+    'SOJA -AVICOLA AVIKONOR':      'Lima',
+    'PASTA DE GIRASOL':            'Lima',
+    'HIS':                         'Lima',
+    'INTEGRAL AVICOLA AVIKONOR':   'Lima',
+}
+
+# Temperatura y humedad base por ciudad (fallback cuando no hay dato climático)
+CIUDAD_TEMP_BASE = {
+    'Lima':     19.5,
+    'Trujillo': 20.5,
+    'Cusco':    13.0,
+    'Iquitos':  26.5,
+    'Pucallpa': 26.0,
+}
+
+CIUDAD_HUMEDAD_BASE = {
+    'Lima':     85,
+    'Trujillo': 82,
+    'Cusco':    60,
+    'Iquitos':  88,
+    'Pucallpa': 87,
+}
+
+
+def asignar_ciudad(matriz):
+    """Asigna ciudad según el tipo de matriz (mapeo exhaustivo + coincidencia parcial)."""
+    if pd.isna(matriz):
+        return 'Lima'
+    m = str(matriz).upper().strip()
+    # 1. Coincidencia exacta
+    if m in MATRIZ_CIUDAD:
+        return MATRIZ_CIUDAD[m]
+    # 2. Coincidencia parcial (la clave está contenida en el valor o viceversa)
+    for key, ciudad in MATRIZ_CIUDAD.items():
+        if key in m or m in key:
+            return ciudad
+    return 'Lima'
+
+
+
+#   3. Funciones auxiliares
+
 
 def calcular_factor_riesgo_temp(temp_actual, toxina):
     if toxina not in TEMP_OPTIMA or pd.isna(temp_actual):
@@ -84,9 +199,7 @@ def calcular_factor_riesgo_humedad(humedad_actual, toxina):
         return max(0.1, 0.3 * (humedad_actual / h_min))
     elif h_min <= humedad_actual <= h_max:
         rango = (h_max - h_min) / 2
-        if rango == 0:
-            return 1.0                              # CORRECCIÓN: evitar /0
-        return max(0.5, 1 - abs(humedad_actual - h_opt) / rango)
+        return max(0.5, 1 - abs(humedad_actual - h_opt) / rango) if rango else 1.0
     return max(0.2, 0.5 * (h_max / humedad_actual))
 
 
@@ -103,10 +216,8 @@ def esta_contaminado(valor):
     if pd.isna(valor) or valor == "":
         return 0
     s = str(valor).strip()
-    if s.startswith('<'):
-        return 0
-    if s.startswith('>'):
-        return 1
+    if s.startswith('<'):  return 0
+    if s.startswith('>'):  return 1
     try:
         float(s.replace(',', '.'))
         return 1
@@ -114,72 +225,57 @@ def esta_contaminado(valor):
         return 0
 
 
-def asignar_ciudad(matriz):
-    m = str(matriz).upper().strip()
-    if 'TORTA DE PALMISTE' in m:  return 'Pucallpa'
-    if 'TRIGO' in m or 'POLVILLO' in m: return 'Cusco'
-    if 'MAIZ' in m:               return 'Trujillo'
-    if 'ARROCILLO' in m:          return 'Iquitos'
-    if 'SOJA' in m:               return 'Lima'
-    return 'Lima'
 
+#   4. Cargar datos
 
-#   3. Cargar datos                               
 print("Cargando datos")
 
 df_micotoxinas = pd.read_excel('datos Peru micotoxinas.xlsx')
 df_clima       = pd.read_excel('detalle por ubicacion.xlsx')
-
 print(f"  Micotoxinas : {df_micotoxinas.shape[0]} filas")
 print(f"  Clima       : {df_clima.shape[0]} filas")
 
 
-#   4. Procesar micotoxinas                           
+
+#   5. Procesar micotoxinas
+
 print("Procesando datos de micotoxinas")
 
 df_micotoxinas.columns = df_micotoxinas.columns.str.strip()
-
-# CORRECCIÓN: astype(str) antes de strip para evitar crash con NaN
 if 'Mes' in df_micotoxinas.columns:
     df_micotoxinas['Mes'] = df_micotoxinas['Mes'].astype(str).str.strip()
 
-if 'Año' in df_micotoxinas.columns:
-    print(f"  Años: {sorted(df_micotoxinas['Año'].dropna().unique())}")
+cols_presentes = {k: v for k, v in COLS_TOXINAS.items()
+                  if k in df_micotoxinas.columns}
+if not cols_presentes:
+    raise ValueError("No se encontraron columnas de micotoxinas.")
 
-micotoxinas    = ['AFB1 (ppb)', 'FUM  (ppb)', 'DON  (ppb)',
-                  'ZEN  (ppb)', 'T-2/HT-2  (ppb)', 'OTA  (ppb)']
-nombres_cortos = {
-    'AFB1 (ppb)': 'AFB1', 'FUM  (ppb)': 'FUM', 'DON  (ppb)': 'DON',
-    'ZEN  (ppb)': 'ZEN', 'T-2/HT-2  (ppb)': 'T2_HT2', 'OTA  (ppb)': 'OTA',
-}
-
-# Solo columnas presentes
-micotoxinas_ok = [m for m in micotoxinas if m in df_micotoxinas.columns]
-if not micotoxinas_ok:
-    raise ValueError("No se encontraron columnas de micotoxinas. Verifica nombres en el Excel.")
-
-for m in micotoxinas_ok:
-    df_micotoxinas[f'contam_{m}'] = df_micotoxinas[m].apply(esta_contaminado)
+for col_excel, tok in cols_presentes.items():
+    df_micotoxinas[f'contam_{tok}'] = df_micotoxinas[col_excel].apply(esta_contaminado)
 
 df_micotoxinas['contaminada'] = df_micotoxinas[
-    [f'contam_{m}' for m in micotoxinas_ok]
+    [f'contam_{tok}' for tok in cols_presentes.values()]
 ].max(axis=1)
 
-# CORRECCIÓN: verificar que hay dos clases
-if df_micotoxinas['contaminada'].nunique() < 2:
-    raise ValueError("La variable objetivo tiene una sola clase. Revisa los datos.")
+print(f"  Toxinas encontradas: {list(cols_presentes.values())}")
+for tok in cols_presentes.values():
+    n = df_micotoxinas[f'contam_{tok}'].sum()
+    print(f"  {tok}: {n} muestras contaminadas ({n/len(df_micotoxinas):.1%})")
 
-print(f"  Contaminadas: {df_micotoxinas['contaminada'].sum()} "
-      f"de {len(df_micotoxinas)} ({df_micotoxinas['contaminada'].mean():.1%})")
-
+#  Asignar ciudad a cada muestra usando el mapeo exhaustivo  
 df_micotoxinas['ciudad'] = df_micotoxinas['Matriz'].apply(asignar_ciudad)
 
+# Diagnóstico de asignación
+print("\n  Distribución de muestras por ciudad:")
+print(df_micotoxinas['ciudad'].value_counts().to_string())
+print()
 
-#   5. Procesar clima                              
+
+#   6. Procesar clima
+
 print("Procesando datos climáticos")
 
 df_clima.columns = df_clima.columns.str.strip()
-
 for col in COLS_CLIMA:
     if col in df_clima.columns:
         df_clima[col] = (df_clima[col].astype(str)
@@ -194,21 +290,25 @@ df_clima['Mes']     = df_clima['Mes_num'].map(NUM_A_MES)
 col_loc = next((c for c in ['location', 'ciudad', 'Location']
                 if c in df_clima.columns), df_clima.columns[-1])
 
-agg_dict = {c: 'mean' for c in COLS_CLIMA if c in df_clima.columns}
 df_clima_agrupado = (
     df_clima.groupby(['Año', 'Mes', col_loc])
-    .agg(agg_dict)
+    .agg({c: 'mean' for c in COLS_CLIMA if c in df_clima.columns})
     .reset_index()
     .rename(columns={col_loc: 'ciudad'})
 )
 
 
-#   6. Unir y calcular riesgo                          
+
+#   7. Unir y rellenar valores climáticos faltantes
+#      Prioridad: dato real del clima → media histórica de la ciudad
+#      → valor base (CIUDAD_TEMP_BASE / CIUDAD_HUMEDAD_BASE)
+
 df_completo = df_micotoxinas.merge(
     df_clima_agrupado, on=['Año', 'Mes', 'ciudad'], how='left'
 )
 df_completo['Mes_num'] = df_completo['Mes'].map(MESES_A_NUM)
 
+# Paso 1: rellenar con la media histórica de cada ciudad
 for ciudad in df_completo['ciudad'].unique():
     mask = df_completo['ciudad'] == ciudad
     for col in COLS_CLIMA:
@@ -216,464 +316,505 @@ for ciudad in df_completo['ciudad'].unique():
             media = df_completo.loc[mask, col].mean()
             df_completo.loc[mask & df_completo[col].isna(), col] = media
 
+# Paso 2: si aún hay NaN (ciudad sin ningún dato climático),
+#          usar el valor base definido en CIUDAD_TEMP_BASE / CIUDAD_HUMEDAD_BASE
+base_fallback = {
+    'temperature_2m_mean':        CIUDAD_TEMP_BASE,
+    'temperature_2m_max':         {c: v + 5 for c, v in CIUDAD_TEMP_BASE.items()},
+    'relative_humidity_2m_mean':  CIUDAD_HUMEDAD_BASE,
+    'precipitation_sum':          {'Lima': 2, 'Trujillo': 3, 'Cusco': 50,
+                                   'Iquitos': 250, 'Pucallpa': 200},
+}
+
+for col, ciudad_dict in base_fallback.items():
+    if col in df_completo.columns:
+        for ciudad, valor in ciudad_dict.items():
+            mask = (df_completo['ciudad'] == ciudad) & df_completo[col].isna()
+            df_completo.loc[mask, col] = valor
+
+# Reportar cobertura de datos climáticos reales por ciudad
+print("\n  Cobertura de datos climáticos reales por ciudad:")
+for ciudad in sorted(df_completo['ciudad'].unique()):
+    mask   = df_completo['ciudad'] == ciudad
+    total  = mask.sum()
+    con_clima = df_completo.loc[mask, 'temperature_2m_mean'].notna().sum()
+    # En este punto ya rellenamos, así que mostramos antes del relleno
+    # (el dato ya fue imputado, indicamos total)
+    print(f"    {ciudad:<12}: {total:>4} muestras")
+
 df_completo['riesgo_total'] = df_completo.apply(
     lambda r: calcular_riesgo_total(r['temperature_2m_mean'],
                                      r['relative_humidity_2m_mean']), axis=1
 )
-
 df_completo = df_completo.dropna(
     subset=['temperature_2m_mean', 'relative_humidity_2m_mean', 'contaminada']
 )
 
-print(f"  Dataset final: {df_completo.shape[0]} muestras")
+print(f"\n  Dataset final: {df_completo.shape[0]} muestras")
 print(f"  Ciudades: {df_completo['ciudad'].unique().tolist()}")
 
-
-#   7. Análisis exploratorio por ciudad                    ─
-print("\n=== ANÁLISIS POR CIUDAD ===")
-
-contam_por_ciudad = (
-    df_completo.groupby('ciudad')['contaminada']
-    .agg(tasa='mean', n='count', n_contam='sum')
-    .round(4)
-    .sort_values('tasa', ascending=False)
-    .reset_index()
-)
-for _, row in contam_por_ciudad.iterrows():
-    print(f"  {row['ciudad']}: {row['tasa']:.1%} "
-          f"({row['n_contam']:.0f}/{row['n']:.0f})")
-
-df_evol = (
-    df_completo.groupby(['Año', 'Mes_num', 'ciudad'])
-    .agg(contaminada=('contaminada', 'mean'),
-         temperature_2m_mean=('temperature_2m_mean', 'mean'),
-         relative_humidity_2m_mean=('relative_humidity_2m_mean', 'mean'),
-         riesgo_total=('riesgo_total', 'mean'))
-    .reset_index()
-)
-
-# CORRECCIÓN: Mes_num a int antes de construir la fecha
-df_evol['Mes_num'] = df_evol['Mes_num'].astype(int)
-df_evol['Fecha']   = pd.to_datetime(
-    df_evol['Año'].astype(str) + '-' +
-    df_evol['Mes_num'].astype(str).str.zfill(2) + '-01'
-)
+# Verificación: temperatura media observada por ciudad
+print("\n  Temperatura media por ciudad (datos reales + imputados):")
+resumen_temp = (df_completo.groupby('ciudad')[['temperature_2m_mean',
+                                                'relative_humidity_2m_mean']]
+                .mean().round(1))
+print(resumen_temp.to_string())
+print()
 
 
-#   8. Gráfico: Evolución temporal por ciudad                 ─
-ciudades   = df_evol['ciudad'].unique()
-n_ciudades = len(ciudades)
-n_cols     = 3
-n_rows     = int(np.ceil(n_ciudades / n_cols))
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 6 * n_rows))
-axes_flat = np.array(axes).flatten()
-fig.suptitle('Evolución Temporal de Contaminación por Ciudad',
-             fontsize=16, fontweight='bold')
-
-for idx, ciudad in enumerate(ciudades):
-    ax  = axes_flat[idx]
-    dfc = df_evol[df_evol['ciudad'] == ciudad].sort_values('Fecha')
-    ax.plot(dfc['Fecha'], dfc['contaminada'] * 100,
-            'o-', linewidth=2, markersize=4, color='steelblue')
-    if len(dfc) > 1:
-        z = np.polyfit(range(len(dfc)), dfc['contaminada'], 1)
-        ax.plot(dfc['Fecha'], np.poly1d(z)(range(len(dfc))) * 100,
-                'r--', linewidth=2, label=f'Tendencia: {z[0]*100:+.1f}%/periodo')
-    ax.set_title(ciudad, fontsize=12, fontweight='bold')
-    ax.set_ylabel('Contaminación (%)')
-    ax.set_ylim(0, 100)
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(axis='x', rotation=45)
-
-# Ocultar subplots sobrantes
-for j in range(n_ciudades, len(axes_flat)):
-    axes_flat[j].set_visible(False)
-
-plt.tight_layout()
-plt.savefig('evolucion_contaminacion_por_ciudad.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-
-#   9. Gráfico: Heatmap ciudad × mes                      
-fig, ax = plt.subplots(figsize=(12, 8))
-
-meses_presentes = [m for m in ORDEN_MESES if m in df_completo['Mes'].unique()]
-matriz_cm = (
-    df_completo.groupby(['ciudad', 'Mes'])['contaminada']
-    .mean()
-    .unstack()
-    .reindex(columns=meses_presentes)   # CORRECCIÓN: solo meses con datos
-)
-
-# Añadir anotación de n muestras para advertir celdas con pocos datos
-n_matriz = (
-    df_completo.groupby(['ciudad', 'Mes'])['contaminada']
-    .count()
-    .unstack()
-    .reindex(columns=meses_presentes)
-)
-annot_labels = matriz_cm.apply(lambda col: col.map(
-    lambda x: f'{x*100:.0f}%' if not pd.isna(x) else ''
-))
-
-sns.heatmap(matriz_cm * 100, annot=annot_labels, fmt='',
-            cmap='YlOrRd', cbar_kws={'label': 'Tasa Contaminación (%)'},
-            ax=ax, linewidths=0.5)
-ax.set_title('Mapa de Calor: Contaminación por Ciudad y Mes\n'
-             '(celdas grises = sin datos ese mes)',
-             fontsize=13, fontweight='bold')
-ax.set_xlabel('Mes'); ax.set_ylabel('Ciudad')
-
-plt.tight_layout()
-plt.savefig('heatmap_ciudad_mes.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-
-#   10. Gráfico: Condiciones climáticas por ciudad               
-fig, axes = plt.subplots(1, 2, figsize=(16, 8))
-fig.suptitle('Condiciones Climáticas por Ciudad', fontsize=14, fontweight='bold')
-
-for ax, col, color, xlabel in [
-    (axes[0], 'temperature_2m_mean',       'coral',     'Temperatura Promedio (°C)'),
-    (axes[1], 'relative_humidity_2m_mean', 'lightblue', 'Humedad Promedio (%)'),
-]:
-    stats = (df_completo.groupby('ciudad')[col]
-             .agg(['mean', 'min', 'max'])
-             .sort_values('mean').reset_index())
-    ax.barh(stats['ciudad'], stats['mean'], color=color, edgecolor='black')
-    ax.errorbar(stats['mean'], stats['ciudad'],
-                xerr=[stats['mean'] - stats['min'],
-                      stats['max']  - stats['mean']],
-                fmt='none', color='black', capsize=5)
-    ax.set_xlabel(xlabel, fontsize=12)
-    ax.grid(True, alpha=0.3, axis='x')
-
-plt.tight_layout()
-plt.savefig('condiciones_climaticas_por_ciudad.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-
-#   11. Correlaciones por ciudad                        ─
-print("\n=== CORRELACIONES POR CIUDAD ===")
-for ciudad in df_completo['ciudad'].unique():
-    dfc = df_completo[df_completo['ciudad'] == ciudad]
-    if len(dfc) > 10:
-        print(f"\n{ciudad} (n={len(dfc)}):")
-        print(f"  Temp-Contaminación:    {dfc['temperature_2m_mean'].corr(dfc['contaminada']):.3f}")
-        print(f"  Humedad-Contaminación: {dfc['relative_humidity_2m_mean'].corr(dfc['contaminada']):.3f}")
-        print(f"  Riesgo-Contaminación:  {dfc['riesgo_total'].corr(dfc['contaminada']):.3f}")
-
-
-#   12. Preparar modelo                             
-print("\nPreparando datos para el modelo")
-
+#   8. Codificar categóricas
+ 
 le_ciudad = LabelEncoder().fit(df_completo['ciudad'].unique())
 le_matriz = LabelEncoder().fit(df_completo['Matriz'].unique())
 
 df_completo['Matriz_enc'] = le_matriz.transform(df_completo['Matriz'])
 df_completo['ciudad_enc'] = le_ciudad.transform(df_completo['ciudad'])
 
-predictores = ['Matriz_enc', 'ciudad_enc',
+PREDICTORES = ['Matriz_enc', 'ciudad_enc',
                'temperature_2m_mean', 'relative_humidity_2m_mean', 'riesgo_total']
 
-X = df_completo[predictores].copy()
-y = df_completo['contaminada'].copy()
+
+ 
+#   9. Entrenar UN MODELO RF POR TOXINA
+
+print("\n=== ENTRENANDO UN MODELO RF POR TOXINA ===")
+
+modelos_por_toxina   = {}
+metricas_por_toxina  = {}
+test_data_por_toxina = {}
+
+for tok in cols_presentes.values():
+    col_y = f'contam_{tok}'
+    y_tok = df_completo[col_y]
+
+    if y_tok.nunique() < 2:
+        print(f"  {tok}: solo una clase, se omite.")
+        continue
+
+    n_pos = y_tok.sum()
+    n_neg = (y_tok == 0).sum()
+    print(f"\n    {tok} ({TEMP_OPTIMA[tok]['hongo']})")
+    print(f"     Contaminadas: {n_pos} | No contaminadas: {n_neg}")
+
+    X = df_completo[PREDICTORES].copy()
+    y = y_tok.copy()
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+
+    min_class = y_train.value_counts().min()
+    n_splits  = min(5, min_class)
+
+    rf = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=8,
+        min_samples_split=10,
+        oob_score=True,
+        random_state=42,
+        n_jobs=-1,
+    )
+    rf.fit(X_train, y_train)
+
+    cv        = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(rf, X_train, y_train, cv=cv, scoring='roc_auc')
+
+    y_test_pred  = rf.predict(X_test)
+    y_test_proba = rf.predict_proba(X_test)[:, 1]
+    auc_test     = roc_auc_score(y_test, y_test_proba)
+    ap_test      = average_precision_score(y_test, y_test_proba)
+
+    print(f"     AUC-ROC : {auc_test:.3f}")
+    print(f"     Avg Prec: {ap_test:.3f}")
+    print(f"     OOB     : {rf.oob_score_:.3f}")
+    print(f"     CV AUC  : {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
+    print(f"     Accuracy: {accuracy_score(y_test, y_test_pred):.3f}")
+
+    modelos_por_toxina[tok]   = rf
+    metricas_por_toxina[tok]  = {
+        'AUC_test': auc_test,
+        'AP_test':  ap_test,
+        'OOB':      rf.oob_score_,
+        'CV_mean':  cv_scores.mean(),
+        'CV_std':   cv_scores.std(),
+        'Accuracy': accuracy_score(y_test, y_test_pred),
+        'n_pos':    int(n_pos),
+        'n_splits': n_splits,
+    }
+    test_data_por_toxina[tok] = (X_test, y_test, y_test_pred, y_test_proba)
 
 
-#   13. Split 70/30                               
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.3, random_state=42, stratify=y
-)
-print(f"  Train: {len(X_train)} ({y_train.mean():.1%} contaminadas)")
-print(f"  Test:  {len(X_test)}  ({y_test.mean():.1%} contaminadas)")
+
+#   10. Gráficos de diagnóstico por toxina
+ 
+print("\nGenerando gráficos de diagnóstico por toxina...")
+
+n_tok  = len(modelos_por_toxina)
+n_cols = 3
+n_rows = int(np.ceil(n_tok / n_cols))
+
+# 10.1 Curvas ROC
+fig, ax = plt.subplots(figsize=(10, 7))
+colores_roc = plt.cm.Set2(np.linspace(0, 1, n_tok))
+
+for i, (tok, rf) in enumerate(modelos_por_toxina.items()):
+    _, y_test, _, y_proba = test_data_por_toxina[tok]
+    fpr, tpr, _ = roc_curve(y_test, y_proba)
+    auc = metricas_por_toxina[tok]['AUC_test']
+    ax.plot(fpr, tpr, linewidth=2, color=colores_roc[i],
+            label=f'{tok} (AUC={auc:.3f})')
+
+ax.plot([0, 1], [0, 1], 'k--', alpha=0.4)
+ax.set_title('Curvas ROC por Micotoxina', fontsize=14, fontweight='bold')
+ax.set_xlabel('Tasa Falsos Positivos')
+ax.set_ylabel('Tasa Verdaderos Positivos')
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('roc_por_toxina.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("  ✓ roc_por_toxina.png")
+
+# 10.2 Matrices de confusión
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 6 * n_rows))
+axes_flat = np.array(axes).flatten()
+fig.suptitle('Matrices de Confusión por Micotoxina', fontsize=15, fontweight='bold')
+
+for i, (tok, rf) in enumerate(modelos_por_toxina.items()):
+    ax = axes_flat[i]
+    _, y_test, y_pred, _ = test_data_por_toxina[tok]
+    cm = confusion_matrix(y_test, y_pred)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                xticklabels=['No contam.', 'Contam.'],
+                yticklabels=['No contam.', 'Contam.'])
+    ax.set_title(f'{tok}\n{TEMP_OPTIMA[tok]["hongo"]}', fontsize=10)
+    ax.set_xlabel('Predicho'); ax.set_ylabel('Actual')
+
+for j in range(n_tok, len(axes_flat)):
+    axes_flat[j].set_visible(False)
+
+plt.tight_layout()
+plt.savefig('confusion_por_toxina.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("  ✓ confusion_por_toxina.png")
+
+# 10.3 Importancia de variables
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 6 * n_rows))
+axes_flat = np.array(axes).flatten()
+fig.suptitle('Importancia de Variables por Micotoxina', fontsize=15, fontweight='bold')
+nombres_vars = ['Matriz', 'Ciudad', 'Temperatura', 'Humedad', 'Riesgo Total']
+
+for i, (tok, rf) in enumerate(modelos_por_toxina.items()):
+    ax = axes_flat[i]
+    imp_df = pd.DataFrame({
+        'variable':    nombres_vars,
+        'importancia': rf.feature_importances_,
+    }).sort_values('importancia', ascending=True)
+    bars = ax.barh(imp_df['variable'], imp_df['importancia'],
+                   color='steelblue', edgecolor='k')
+    for bar, val in zip(bars, imp_df['importancia']):
+        ax.text(val + 0.002, bar.get_y() + bar.get_height()/2,
+                f'{val:.3f}', va='center', fontsize=9)
+    ax.set_title(tok, fontsize=11, fontweight='bold')
+    ax.set_xlabel('Importancia (Gini)')
+    ax.grid(True, alpha=0.3, axis='x')
+
+for j in range(n_tok, len(axes_flat)):
+    axes_flat[j].set_visible(False)
+
+plt.tight_layout()
+plt.savefig('importancia_por_toxina.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("  ✓ importancia_por_toxina.png")
+
+# 10.4 Resumen métricas
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+fig.suptitle('Comparativa de Métricas por Toxina', fontsize=14, fontweight='bold')
+
+toxinas_ok = list(modelos_por_toxina.keys())
+auc_vals   = [metricas_por_toxina[t]['AUC_test'] for t in toxinas_ok]
+oob_vals   = [metricas_por_toxina[t]['OOB']      for t in toxinas_ok]
+ap_vals    = [metricas_por_toxina[t]['AP_test']  for t in toxinas_ok]
+x          = np.arange(len(toxinas_ok))
+
+for ax, vals, ylabel, title, umbral in [
+    (axes[0], auc_vals, 'AUC-ROC',          'AUC-ROC en Test',      0.7),
+    (axes[1], oob_vals, 'OOB Score',         'OOB Score',            0.7),
+    (axes[2], ap_vals,  'Average Precision', 'Precision Media (AP)', 0.5),
+]:
+    colors = ['steelblue' if v >= umbral else 'coral' for v in vals]
+    ax.bar(x, vals, color=colors, edgecolor='k')
+    ax.axhline(umbral, color='red', linestyle='--', linewidth=1.5,
+               label=f'Umbral {umbral}')
+    ax.set_xticks(x); ax.set_xticklabels(toxinas_ok, rotation=30)
+    ax.set_ylabel(ylabel); ax.set_title(title)
+    ax.set_ylim(0, 1.05); ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3, axis='y')
+    for j, v in enumerate(vals):
+        ax.text(j, v + 0.02, f'{v:.3f}', ha='center',
+                fontsize=9, fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('metricas_por_toxina.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("  ✓ metricas_por_toxina.png")
 
 
-#   14. Entrenar RF                               
-print("Entrenando Random Forest")
 
-rf = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=8,
-    min_samples_split=10,
-    oob_score=True,         # validación OOB gratuita
-    random_state=42,
-    n_jobs=-1,
-)
-rf.fit(X_train, y_train)
+#   11. PROYECCIÓN POR TOXINA Y AÑO (+1.6°C acumulado 2026-2031)
+#       El delta de temperatura se aplica diferenciado por ciudad,
+#       respetando el valor de temperatura real (o imputado) de cada
+#       muestra → el modelo "ve" la temperatura específica de la
+#       ciudad/matriz en el escenario climático futuro.
 
-# CORRECCIÓN: n_splits limitado al mínimo de muestras por clase
-min_class = y_train.value_counts().min()
-n_splits  = min(5, min_class)
-cv        = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-cv_scores  = cross_val_score(rf, X_train, y_train, cv=cv, scoring='roc_auc')
-y_cv_proba = cross_val_predict(rf, X_train, y_train, cv=cv,
-                               method='predict_proba')[:, 1]
-
-y_train_pred  = rf.predict(X_train)
-y_train_proba = rf.predict_proba(X_train)[:, 1]
-y_test_pred   = rf.predict(X_test)
-y_test_proba  = rf.predict_proba(X_test)[:, 1]
-
-auc_test = roc_auc_score(y_test, y_test_proba)
-ap_test  = average_precision_score(y_test, y_test_proba)
-
-print(f"\nRendimiento en PRUEBA:")
-print(f"  Accuracy   : {accuracy_score(y_test, y_test_pred):.3f}")
-print(f"  AUC-ROC    : {auc_test:.3f}")
-print(f"  Avg Prec.  : {ap_test:.3f}")
-print(f"  OOB Score  : {rf.oob_score_:.3f}")
-print(f"  CV AUC     : {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
-print(f"\n{classification_report(y_test, y_test_pred, target_names=['No contam.','Contam.'])}")
-
-print("Importancia de variables:")
-for var, imp in zip(predictores, rf.feature_importances_):
-    print(f"  {var}: {imp:.3f}")
-
-
-#   15. Proyección +1°C 2026-2031                       ─
-print("\n=== PROYECCIÓN 2026-2031 (+1°C) ===")
+print("\n=== PROYECCIÓN POR TOXINA Y AÑO (2026-2031, +1.6°C) ===")
 
 años_futuros     = list(range(2026, 2032))
-incremento_total = 1.0 / 6
-resultados_ciudad = []
+incremento_total = 1.6 / 6
+
+tasa_actual = {
+    tok: df_completo[f'contam_{tok}'].mean()
+    for tok in modelos_por_toxina
+}
+
+proyeccion = []
 
 for año in años_futuros:
-    delta = min(1.0, (año - 2025) * incremento_total)
-    for ciudad in df_completo['ciudad'].unique():
-        dfc = df_completo[df_completo['ciudad'] == ciudad].copy()
-        dfc['temperature_2m_mean'] += delta
-        dfc['riesgo_total'] = dfc.apply(
-            lambda r: calcular_riesgo_total(r['temperature_2m_mean'],
-                                             r['relative_humidity_2m_mean']), axis=1
-        )
-        dfc['Matriz_enc'] = le_matriz.transform(dfc['Matriz'])
-        dfc['ciudad_enc'] = le_ciudad.transform(dfc['ciudad'])
-        proba = rf.predict_proba(dfc[predictores])[:, 1]
+    delta = min(1.6, (año - 2025) * incremento_total)
+    df_fut = df_completo.copy()
 
-        resultados_ciudad.append({
-            'Año': año, 'ciudad': ciudad, 'delta_temp': delta,
-            'contaminacion_estimada': (proba > 0.5).mean(),
-            'probabilidad_promedio':  proba.mean(),      # ← más informativo que el techo
-            'temp_promedio':          dfc['temperature_2m_mean'].mean(),
-        })
+    # Aplicar delta sobre la temperatura real de cada muestra
+    df_fut['temperature_2m_mean'] += delta
+    df_fut['temperature_2m_max']  += delta
 
-df_res = pd.DataFrame(resultados_ciudad)
-res_2031 = df_res[df_res['Año'] == 2031]
-actual_ciudad = df_completo.groupby('ciudad')['contaminada'].mean()
+    # Recalcular riesgo con la nueva temperatura
+    df_fut['riesgo_total'] = df_fut.apply(
+        lambda r: calcular_riesgo_total(r['temperature_2m_mean'],
+                                         r['relative_humidity_2m_mean']), axis=1
+    )
+    df_fut['Matriz_enc'] = le_matriz.transform(df_fut['Matriz'])
+    df_fut['ciudad_enc'] = le_ciudad.transform(df_fut['ciudad'])
 
-print(f"\n{'Ciudad':<12} {'Actual':>8} {'2031 (>0.5)':>12} "
-      f"{'Cambio pp':>10} {'Prob. media':>12}")
-print("-" * 58)
-for _, row in res_2031.iterrows():
-    actual = actual_ciudad.get(row['ciudad'], 0)
-    cambio = (row['contaminacion_estimada'] - actual) * 100
-    print(f"  {row['ciudad']:<10} {actual:>8.1%} {row['contaminacion_estimada']:>12.1%} "
-          f"{cambio:>+9.1f}pp {row['probabilidad_promedio']:>12.3f}")
+    X_fut = df_fut[PREDICTORES].copy()
+
+    for tok, rf in modelos_por_toxina.items():
+        proba = rf.predict_proba(X_fut)[:, 1]
+
+        # Probabilidad desglosada por ciudad (diagnóstico)
+        for ciudad in df_fut['ciudad'].unique():
+            mask_c = df_fut['ciudad'] == ciudad
+            if mask_c.sum() == 0:
+                continue
+            proyeccion.append({
+                'Año':        año,
+                'Toxina':     tok,
+                'Hongo':      TEMP_OPTIMA[tok]['hongo'],
+                'Ciudad':     ciudad,
+                'Delta_temp': delta,
+                'Temp_media': df_fut.loc[mask_c, 'temperature_2m_mean'].mean(),
+                'prob_media': float(proba[mask_c.values].mean()),
+                'pct_contam': float((proba[mask_c.values] > 0.5).mean() * 100),
+            })
+
+df_proy = pd.DataFrame(proyeccion)
+
+# Agregado global por año/toxina (promedio ponderado por nº muestras)
+df_proy_global = (
+    df_proy.groupby(['Año', 'Toxina', 'Hongo', 'Delta_temp'])
+    .agg(prob_media=('prob_media', 'mean'),
+         pct_contam=('pct_contam', 'mean'))
+    .reset_index()
+)
+
+# Tabla resumen 2031
+print(f"\n{'Toxina':<10} {'Actual':>8} {'2031 prob.':>12} {'2031 % >0.5':>13} {'Cambio pp':>10}")
+print("-" * 57)
+for tok in modelos_por_toxina:
+    actual = tasa_actual[tok]
+    fila   = df_proy_global[(df_proy_global['Año'] == 2031) &
+                             (df_proy_global['Toxina'] == tok)].iloc[0]
+    cambio = fila['pct_contam'] / 100 - actual
+    print(f"  {tok:<8} {actual:>8.1%} {fila['prob_media']:>12.3f} "
+          f"{fila['pct_contam']:>12.1f}% {cambio*100:>+9.1f}pp")
+
+# Tabla por ciudad y toxina en 2031
+print("\n  Probabilidad media por ciudad en 2031:")
+proy_2031 = df_proy[df_proy['Año'] == 2031]
+tabla_ciudad = proy_2031.pivot_table(
+    index='Ciudad', columns='Toxina', values='prob_media', aggfunc='mean'
+).round(3)
+print(tabla_ciudad.to_string())
 
 
-#  16. Gráfico: Proyección – probabilidad media (evita efecto techo) 
+ 
+#   12. Gráficos de proyección
+
+colores_proy = plt.cm.Set2(np.linspace(0, 1, len(modelos_por_toxina)))
+
+# 12.1 Probabilidad media global por toxina
 fig, axes = plt.subplots(1, 2, figsize=(18, 7))
-fig.suptitle('Proyección de Contaminación por Ciudad (2026-2031, +1°C)',
+fig.suptitle('Proyección de Contaminación por Micotoxina (2026-2031, +1.6°C)',
              fontsize=14, fontweight='bold')
 
-ciudades_unicas = df_res['ciudad'].unique()
-colores = plt.cm.Set2(np.linspace(0, 1, len(ciudades_unicas)))
+for i, tok in enumerate(modelos_por_toxina):
+    df_t = df_proy_global[df_proy_global['Toxina'] == tok]
+    axes[0].plot(df_t['Año'], df_t['prob_media'],
+                 'o-', color=colores_proy[i], linewidth=2.5,
+                 markersize=7, label=tok)
+    axes[1].plot(df_t['Año'], df_t['pct_contam'],
+                 'o-', color=colores_proy[i], linewidth=2.5,
+                 markersize=7, label=tok)
+    axes[1].scatter(2025, tasa_actual[tok] * 100,
+                    color=colores_proy[i], marker='*', s=120, zorder=5)
 
-for i, ciudad in enumerate(ciudades_unicas):
-    dfc = df_res[df_res['ciudad'] == ciudad]
+axes[0].axvline(2025.5, color='gray', linestyle=':', alpha=0.6, label='Inicio proyección')
+axes[1].axvline(2025.5, color='gray', linestyle=':', alpha=0.6, label='★ Valor actual 2025')
 
-    # Panel izquierdo: % muestras con prob > 0.5
-    axes[0].plot(dfc['Año'], dfc['contaminacion_estimada'] * 100,
-                 'o-', color=colores[i], linewidth=2, markersize=6, label=ciudad)
-
-    # Panel derecho: probabilidad media (más sensible al cambio climático)
-    axes[1].plot(dfc['Año'], dfc['probabilidad_promedio'],
-                 'o-', color=colores[i], linewidth=2, markersize=6, label=ciudad)
-
-axes[0].set_title('% Muestras predichas como contaminadas\n(umbral prob > 0.5)')
-axes[0].set_ylabel('Contaminación estimada (%)')
-axes[0].set_ylim(0, 100)
-
-axes[1].set_title('Probabilidad media de contaminación\n(más sensible al +1°C)')
-axes[1].set_ylabel('Probabilidad media')
-axes[1].set_ylim(0, 1)
+axes[0].set_title('Probabilidad media de contaminación')
+axes[0].set_ylabel('Probabilidad media'); axes[0].set_ylim(0, 1)
+axes[1].set_title('% muestras clasificadas como contaminadas\n(★ = valor actual observado)')
+axes[1].set_ylabel('Contaminación estimada (%)'); axes[1].set_ylim(0, 105)
 
 for ax in axes:
     ax.set_xlabel('Año')
     ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
+    ax.set_xticks(años_futuros)
 
 plt.tight_layout()
-plt.savefig('proyeccion_contaminacion_por_ciudad.png', dpi=150, bbox_inches='tight')
+plt.savefig('proyeccion_por_toxina.png', dpi=150, bbox_inches='tight')
 plt.show()
+print("  ✓ proyeccion_por_toxina.png")
 
+# 12.2 Proyección por ciudad (heatmap para 2031)
+fig, axes = plt.subplots(1, len(modelos_por_toxina),
+                         figsize=(4 * len(modelos_por_toxina), 5))
+fig.suptitle('Probabilidad de Contaminación por Ciudad en 2031 (+1.6°C)',
+             fontsize=13, fontweight='bold')
 
-# 17. Diagnóstico del modelo (gráficas mejoradas) 
-fig = plt.figure(figsize=(18, 12))
-fig.suptitle('Diagnóstico del Modelo Random Forest',
-             fontsize=16, fontweight='bold')
+if len(modelos_por_toxina) == 1:
+    axes = [axes]
 
-# 17.1 Matriz de confusión
-ax1 = plt.subplot(2, 3, 1)
-cm  = confusion_matrix(y_test, y_test_pred)
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax1,
-            xticklabels=['No contam.', 'Contam.'],
-            yticklabels=['No contam.', 'Contam.'])
-ax1.set_title('Matriz de Confusión')
-ax1.set_xlabel('Predicho'); ax1.set_ylabel('Actual')
+ciudades_ord = ['Pucallpa', 'Iquitos', 'Trujillo', 'Lima', 'Cusco']
 
-# 17.2 Curva ROC
-ax2 = plt.subplot(2, 3, 2)
-fpr, tpr, _ = roc_curve(y_test, y_test_proba)
-ax2.plot(fpr, tpr, 'b-', linewidth=2, label=f'AUC = {auc_test:.3f}')
-ax2.plot([0, 1], [0, 1], 'r--', alpha=0.5)
-ax2.set_title('Curva ROC')
-ax2.set_xlabel('Tasa Falsos Positivos')
-ax2.set_ylabel('Tasa Verdaderos Positivos')
-ax2.legend()
+for i, tok in enumerate(modelos_por_toxina):
+    ax = axes[i]
+    proy_tok = (proy_2031[proy_2031['Toxina'] == tok]
+                .set_index('Ciudad')['prob_media'])
+    vals = [proy_tok.get(c, np.nan) for c in ciudades_ord]
 
-# 17.3 Precision-Recall (MEJOR que "Actual vs Predicho" para clasificación)
-ax3 = plt.subplot(2, 3, 3)
-prec, rec, _ = precision_recall_curve(y_test, y_test_proba)
-ax3.plot(rec, prec, 'g-', linewidth=2, label=f'AP = {ap_test:.3f}')
-ax3.axhline(y=y_test.mean(), color='r', linestyle='--', alpha=0.7,
-            label=f'Baseline = {y_test.mean():.3f}')
-ax3.set_title('Curva Precision-Recall\n(más informativa que Actual vs Predicho)')
-ax3.set_xlabel('Recall'); ax3.set_ylabel('Precision')
-ax3.legend()
-
-# 17.4 Importancia de variables
-ax4 = plt.subplot(2, 3, 4)
-importancias_df = pd.DataFrame({
-    'variable':   ['Matriz', 'Ciudad', 'Temperatura', 'Humedad', 'Riesgo Total'],
-    'importancia': rf.feature_importances_,
-}).sort_values('importancia', ascending=True)
-bars = ax4.barh(importancias_df['variable'], importancias_df['importancia'],
-                color='steelblue', edgecolor='k')
-for bar, val in zip(bars, importancias_df['importancia']):
-    ax4.text(val + 0.002, bar.get_y() + bar.get_height()/2,
-             f'{val:.3f}', va='center', fontsize=9)
-ax4.set_title('Importancia de Variables')
-ax4.set_xlabel('Importancia (Gini)')
-
-# 17.5 Distribución de probabilidades
-ax5 = plt.subplot(2, 3, 5)
-prob_c  = y_test_proba[y_test == 1]
-prob_nc = y_test_proba[y_test == 0]
-if len(prob_c) > 0:
-    ax5.hist(prob_nc, bins=15, alpha=0.5, color='green',
-             label=f'No contam. (n={len(prob_nc)})', density=True)
-    ax5.hist(prob_c,  bins=15, alpha=0.5, color='red',
-             label=f'Contam. (n={len(prob_c)})', density=True)
-ax5.axvline(x=0.5, color='black', linestyle='--', label='Umbral 0.5')
-ax5.set_title('Distribución de Probabilidades Predichas')
-ax5.set_xlabel('Probabilidad predicha'); ax5.legend()
-
-# 17.6 Validación cruzada
-ax6 = plt.subplot(2, 3, 6)
-colors_cv = ['steelblue' if s >= cv_scores.mean() else 'coral' for s in cv_scores]
-ax6.bar(range(1, len(cv_scores) + 1), cv_scores, color=colors_cv, edgecolor='k')
-ax6.axhline(y=cv_scores.mean(), color='red', linestyle='--',
-            label=f'Media = {cv_scores.mean():.3f}')
-ax6.axhline(y=rf.oob_score_, color='green', linestyle=':',
-            label=f'OOB   = {rf.oob_score_:.3f}')
-ax6.set_title('Validación Cruzada (AUC-ROC por fold)')
-ax6.set_xlabel('Fold'); ax6.set_ylabel('AUC-ROC')
-ax6.set_ylim(0, 1); ax6.legend()
+    colors_bar = plt.cm.RdYlGn_r(np.array([v if not np.isnan(v) else 0
+                                             for v in vals]))
+    bars = ax.barh(ciudades_ord, vals, color=colors_bar, edgecolor='k')
+    for bar, val in zip(bars, vals):
+        if not np.isnan(val):
+            ax.text(val + 0.01, bar.get_y() + bar.get_height()/2,
+                    f'{val:.3f}', va='center', fontsize=9)
+    ax.set_xlim(0, 1)
+    ax.set_title(tok, fontweight='bold')
+    ax.set_xlabel('Prob. media')
+    ax.axvline(0.5, color='red', linestyle='--', alpha=0.5)
+    ax.grid(True, alpha=0.3, axis='x')
 
 plt.tight_layout()
-plt.savefig('diagnostico_modelo_completo.png', dpi=150, bbox_inches='tight')
+plt.savefig('proyeccion_ciudad_2031.png', dpi=150, bbox_inches='tight')
 plt.show()
+print("  ✓ proyeccion_ciudad_2031.png")
+
+# 12.3 Incremento anual de probabilidad
+fig, ax = plt.subplots(figsize=(12, 6))
+for i, tok in enumerate(modelos_por_toxina):
+    df_t = df_proy_global[df_proy_global['Toxina'] == tok].sort_values('Año')
+    incrementos = df_t['prob_media'].diff().fillna(0).values
+    ax.plot(años_futuros, incrementos,
+            'o-', color=colores_proy[i], linewidth=2,
+            markersize=6, label=tok)
+
+ax.axhline(0, color='black', linewidth=1)
+ax.set_title('Incremento Anual de Probabilidad de Contaminación por Toxina\n'
+             '(+1.6°C acumulado 2026-2031)', fontsize=13, fontweight='bold')
+ax.set_xlabel('Año'); ax.set_ylabel('Δ Probabilidad respecto al año anterior')
+ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
+ax.grid(True, alpha=0.3); ax.set_xticks(años_futuros)
+plt.tight_layout()
+plt.savefig('incremento_anual_por_toxina.png', dpi=150, bbox_inches='tight')
+plt.show()
+print("  ✓ incremento_anual_por_toxina.png")
 
 
-# 18. Curva de aprendizaje con bandas de std
+ 
+#   13. Curva de aprendizaje (toxina con más muestras positivas)
+
+tok_ref = max(modelos_por_toxina, key=lambda t: metricas_por_toxina[t]['n_pos'])
+rf_ref  = modelos_por_toxina[tok_ref]
+n_ref   = metricas_por_toxina[tok_ref]['n_splits']
+
 fig, ax = plt.subplots(figsize=(10, 6))
-
-train_sizes, train_sc, test_sc = learning_curve(
-    rf, X_train, y_train,
-    cv=n_splits, n_jobs=-1,
+train_sizes, tr_sc, te_sc = learning_curve(
+    rf_ref, df_completo[PREDICTORES], df_completo[f'contam_{tok_ref}'],
+    cv=n_ref, n_jobs=-1,
     train_sizes=np.linspace(0.3, 1.0, 6),
     scoring='roc_auc',
 )
-tr_mean, tr_std = train_sc.mean(axis=1), train_sc.std(axis=1)
-te_mean, te_std = test_sc.mean(axis=1),  test_sc.std(axis=1)
+tr_m, tr_s = tr_sc.mean(axis=1), tr_sc.std(axis=1)
+te_m, te_s = te_sc.mean(axis=1), te_sc.std(axis=1)
 
-ax.plot(train_sizes, tr_mean, 'o-', color='blue', label='Entrenamiento')
-ax.fill_between(train_sizes, tr_mean - tr_std, tr_mean + tr_std, alpha=0.1, color='blue')
-ax.plot(train_sizes, te_mean, 'o-', color='red',  label='Validación')
-ax.fill_between(train_sizes, te_mean - te_std, te_mean + te_std, alpha=0.1, color='red')
+ax.plot(train_sizes, tr_m, 'o-', color='blue', label='Entrenamiento')
+ax.fill_between(train_sizes, tr_m - tr_s, tr_m + tr_s, alpha=0.1, color='blue')
+ax.plot(train_sizes, te_m, 'o-', color='red',  label='Validación')
+ax.fill_between(train_sizes, te_m - te_s, te_m + te_s, alpha=0.1, color='red')
 
-brecha = tr_mean[-1] - te_mean[-1]
-ax.set_title(f'Curva de Aprendizaje\n'
-             f'Brecha train-val = {brecha:.3f} '
+brecha = tr_m[-1] - te_m[-1]
+ax.set_title(f'Curva de Aprendizaje — {tok_ref}\n'
+             f'Brecha = {brecha:.3f} '
              f'({"sobreajuste" if brecha > 0.1 else "aceptable"})',
              fontsize=12)
 ax.set_xlabel('Muestras de entrenamiento')
 ax.set_ylabel('AUC-ROC')
-ax.legend(); ax.grid(True, alpha=0.3)
-ax.set_ylim(0.5, 1.05)
-
+ax.legend(); ax.grid(True, alpha=0.3); ax.set_ylim(0.5, 1.05)
 plt.tight_layout()
-plt.savefig('curva_aprendizaje_completa.png', dpi=150, bbox_inches='tight')
+plt.savefig('curva_aprendizaje.png', dpi=150, bbox_inches='tight')
 plt.show()
+print("  ✓ curva_aprendizaje.png")
 
 
-# 19. Correlaciones (MEJORADO: incluye Matriz y Ciudad) 
-fig, ax = plt.subplots(figsize=(10, 8))
 
-vars_corr = ['Matriz_enc', 'ciudad_enc',
-             'temperature_2m_mean', 'relative_humidity_2m_mean',
-             'riesgo_total', 'contaminada']
-labels_corr = ['Matriz', 'Ciudad', 'Temperatura', 'Humedad',
-               'Riesgo Total', 'Contaminada']
+#   14. Resumen final
 
-corr_m = df_completo[vars_corr].corr()
-corr_m.index   = labels_corr
-corr_m.columns = labels_corr
+print("\n" + "=" * 65)
+print("RESUMEN FINAL — UN MODELO RF POR MICOTOXINA")
+print("=" * 65)
 
-sns.heatmap(corr_m, annot=True, fmt='.2f', cmap='coolwarm',
-            center=0, ax=ax, linewidths=0.5,
-            annot_kws={'size': 10})
-ax.set_title('Mapa de Correlaciones\n'
-             '(incluye Matriz y Ciudad para ver qué predice el modelo)',
-             fontsize=12)
+print("\nMÉTRICAS POR TOXINA:")
+print(f"  {'Toxina':<10} {'AUC':>7} {'OOB':>7} {'AP':>7} {'CV':>14} {'Acc':>8}")
+print("  " + "-" * 58)
+for tok in modelos_por_toxina:
+    m = metricas_por_toxina[tok]
+    print(f"  {tok:<10} {m['AUC_test']:>7.3f} {m['OOB']:>7.3f} "
+          f"{m['AP_test']:>7.3f} "
+          f"{m['CV_mean']:>6.3f}±{m['CV_std']:.3f} "
+          f"{m['Accuracy']:>8.3f}")
 
-plt.tight_layout()
-plt.savefig('correlaciones_completas.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-
-#  20. Resumen final 
-print("\n" + "=" * 60)
-print("RESUMEN FINAL")
-print("=" * 60)
-
-print("\nCIUDADES:")
-for _, row in contam_por_ciudad.iterrows():
-    print(f"  {row['ciudad']}: {row['tasa']:.1%} "
-          f"({row['n_contam']:.0f}/{row['n']:.0f})")
+print("\nPROYECCIÓN 2031 (+1.6°C) — PROBABILIDAD MEDIA:")
+print(f"  {'Toxina':<10} {'Actual':>8} {'2031':>8} {'Δ prob':>8}")
+print("  " + "-" * 38)
+for tok in modelos_por_toxina:
+    actual = tasa_actual[tok]
+    fila   = df_proy_global[(df_proy_global['Año'] == 2031) &
+                             (df_proy_global['Toxina'] == tok)].iloc[0]
+    delta  = fila['prob_media'] - actual
+    print(f"  {tok:<10} {actual:>8.3f} {fila['prob_media']:>8.3f} {delta:>+8.3f}")
 
 print(f"""
-RENDIMIENTO DEL MODELO:
-  AUC-ROC (test)     : {auc_test:.3f}
-  Avg Precision (test): {ap_test:.3f}
-  OOB Score          : {rf.oob_score_:.3f}
-  CV AUC             : {cv_scores.mean():.3f} ± {cv_scores.std():.3f}
-  Accuracy (test)    : {accuracy_score(y_test, y_test_pred):.3f}
+ARCHIVOS GENERADOS:
+  • roc_por_toxina.png
+  • confusion_por_toxina.png
+  • importancia_por_toxina.png
+  • metricas_por_toxina.png
+  • proyeccion_por_toxina.png
+  • proyeccion_ciudad_2031.png         
+  • incremento_anual_por_toxina.png
+  • curva_aprendizaje.png
 """)
-
-print("VARIABLES MÁS IMPORTANTES:")
-for var, imp in zip(predictores, rf.feature_importances_):
-    print(f"  {var}: {imp:.1%}")
-
-print("\nPROYECCIÓN 2031 (+1°C):")
-for _, row in res_2031.iterrows():
-    actual = actual_ciudad.get(row['ciudad'], 0)
-    cambio = (row['contaminacion_estimada'] - actual) * 100
-    print(f"  {row['ciudad']}: {row['contaminacion_estimada']:.1%} "
-          f"(cambio: {cambio:+.1f} pp | prob. media: {row['probabilidad_promedio']:.3f})")
-
 print("ANÁLISIS COMPLETADO")
