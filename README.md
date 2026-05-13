@@ -1,6 +1,6 @@
 # Random Forest: Predicción de Micotoxinas en Perú bajo Escenarios de Cambio Climático
 
-Modelo de Random Forest para predecir la probabilidad de contaminación por micotoxinas (aflatoxinas, fumonisinas, DON, ZEN, T-2/HT-2, OTA) en cultivos peruanos, incorporando temperaturas reales por ciudad y proyecciones de +1°C para el año 2031.
+Modelo de Random Forest para predecir la probabilidad de contaminación por micotoxinas (aflatoxinas, fumonisinas, DON, ZEN, T-2/HT-2, OTA) en cultivos peruanos, incorporando temperaturas reales por ciudad y proyecciones de +1,6°C para el año 2031.
 
 ## Descripción del Proyecto
 
