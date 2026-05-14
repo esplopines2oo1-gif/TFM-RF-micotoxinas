@@ -8,7 +8,7 @@ Las micotoxinas representan un grave problema para la seguridad alimentaria y la
 
 1. Modelar la relación entre variables climáticas (temperatura, humedad) y la presencia de micotoxinas.
 
-2. Proyectar cómo un aumento de +1°C para 2031 afectaría los niveles de contaminación.
+2. Proyectar cómo un aumento de +1,6°C para 2031 afectaría los niveles de contaminación.
 
 3. Identificar las variables más influyentes mediante análisis de importancia.
 
