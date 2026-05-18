@@ -12,18 +12,18 @@ Las micotoxinas representan un grave problema para la seguridad alimentaria y la
 
 3. Identificar las variables más influyentes mediante análisis de importancia.
 
-4. Generar visualizaciones profesionales para la toma de decisiones.
+4. Generar visualizaciones de los resultados.
 
 ### Micotoxinas analizadas:
 
-AFB1 (Aflatoxina B1) - Aspergillus flavus
+AFB1 (Aflatoxina B1)
 
-FUM (Fumonisinas) - Fusarium verticillioides
+FUM (Fumonisinas) 
 
-DON (Deoxynivalenol) - Fusarium graminearum
+DON (Deoxynivalenol) 
 
-ZEN (Zearalenona) - Fusarium graminearum
+ZEN (Zearalenona) 
 
-T-2/HT-2 - Fusarium langsethiae
+T-2/HT-2 
 
-OTA (Ocratoxina A) - Aspergillus ochraceus
+OTA (Ocratoxina A) 
