@@ -4,7 +4,7 @@
 
 ---
 
-## 📋 Tabla de Contenidos
+##  Tabla de Contenidos
 
 - [Descripción del Proyecto](#-descripción-del-proyecto)
 - [Contexto y Motivación](#-contexto-y-motivación)
@@ -22,7 +22,7 @@
 
 ---
 
-## 🎯 Descripción del Proyecto
+##  Descripción del Proyecto
 
 Las micotoxinas son metabolitos tóxicos producidos por hongos de los géneros *Aspergillus*, *Penicillium* y *Fusarium*. Su presencia en cultivos representa un riesgo creciente para la seguridad alimentaria. El cambio climático, con el aumento de temperaturas, favorece la proliferación de estos hongos.
 
@@ -76,7 +76,7 @@ Datos históricos desde 1985 para **7 ubicaciones representativas de Perú** (Li
 
 ---
 
-## 🏗️ Arquitectura del Modelo
+##  Arquitectura del Modelo
 
 ### Cuatro scripts, dos pipelines
 
